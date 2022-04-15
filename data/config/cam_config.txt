@@ -1,0 +1,7 @@
+colormap_sensor{
+"default_agent":0
+"sensor_subtype":SensorSubType.PINHOLE
+"hfov":Deg(90)
+"focal":320.0
+"sensor_height":1.5
+}
