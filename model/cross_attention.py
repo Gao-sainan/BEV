@@ -19,6 +19,14 @@ class PatchEmbedding(nn.Module):
         x = self.to_patch_embedding(x)
         return x
     
+class PositionalEncoding(nn.Module):
+    def __init__(self, cam_id, embed_dim=32) -> None:
+        super(PositionalEncoding, self).__init__()
+        self.embed_dim = embed_dim
+        self.cam_id = cam_id
+        
+    
+    
 class FeaturesEmbedding(nn.Module):
     def __init__(self, cam_id, patch_height=1, patch_width=1, feature_size=88, embed_dim=32) -> None:
         super(FeaturesEmbedding, self).__init__()
@@ -29,13 +37,10 @@ class FeaturesEmbedding(nn.Module):
         self.embed_dim = embed_dim
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         
-        
-        self.patch_embedding = PatchEmbedding(self.patch_height, self.patch_width, patch_dim=patch_height*patch_width*feature_size)
-        
-        # self.pos_encoding = PositionalEncoding(cam_id)
-        
-    def positional_encoding(self, patch_num):
-        # 2 input images and a output raster
+        self.patch_embedding = PatchEmbedding(self.patch_height, self.patch_width, patch_dim=patch_height*patch_width*feature_size).to(self.device)
+        # self.pos_encoding = self.PositionalEncoding(cam_id).to(self.device)
+
+    def PositionalEncoding(self, patch_num):
         cam_encoding = np.zeros((3, self.embed_dim))
         for cam in range(cam_encoding.shape[0]):
             for j in range(cam_encoding.shape[1]):
@@ -46,16 +51,15 @@ class FeaturesEmbedding(nn.Module):
             for i in range(self.embed_dim):
                 positinal_encoding[pos][i] = math.sin(pos / (10000 ** (2*i/self.embed_dim))) if i % 2 == 0 else math.cos(pos / (10000 ** (2*i/self.embed_dim)))
             positinal_encoding[pos][self.embed_dim:] = cam_encoding[self.cam_id]
-        positinal_encoding = torch.from_numpy(positinal_encoding).to(self.device)
+        positinal_encoding = torch.from_numpy(positinal_encoding)
         
         return positinal_encoding
-        
         
     def forward(self, x):
  
         patch_num = (x.shape[2] // self.patch_height) * (x.shape[3] // self.patch_width)
         patch_embed = self.patch_embedding(x)
-        pos_encode = self.positional_encoding(patch_num)
+        pos_encode = self.PositionalEncoding(patch_num).to(self.device)
         embed_out = patch_embed + pos_encode
         
         return embed_out
@@ -68,9 +72,9 @@ class MultiHead_Attention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         
-        self.q = nn.Linear(embed_dim, ma_dim)
-        self.k = nn.Linear(embed_dim, ma_dim)
-        self.v = nn.Linear(embed_dim, ma_dim)
+        self.to_q = nn.Linear(embed_dim, ma_dim)
+        self.to_k = nn.Linear(embed_dim, ma_dim)
+        self.to_v = nn.Linear(embed_dim, ma_dim)
         
         self.a = nn.Softmax(dim=-1)
         
@@ -83,9 +87,10 @@ class MultiHead_Attention(nn.Module):
         
     def forward(self, raster, image):
         # raster, image = x
-        q = self.q(raster)
-        k = self.k(image)
-        v = self.v(image)
+        q = self.to_q(raster)
+        k = self.to_k(image)
+        v = self.to_v(image)
+        
         q = rearrange(q, 'b n (h d) -> b h n d', h = self.n_heads)
         k = rearrange(k, 'b n (h d) -> b h n d', h = self.n_heads)
         v = rearrange(v, 'b n (h d) -> b h n d', h = self.n_heads)
@@ -153,6 +158,6 @@ class Transformer(nn.Module):
         self.encoder = nn.Sequential(*[TransfomerLayer(embed_dim, ma_dim, head_dim, n_heads, hidden_dim, dropout) for _ in range(N)]).to(self.device)
         
     def forward(self, x):
-        output = self.encoder(x)
+        output, _ = self.encoder(x)
         return output
     

@@ -66,7 +66,7 @@ label = label.unsqueeze(1)
 grid2 = torchvision.utils.make_grid(label)
 writer.add_image('labels', grid2, 2)
 
-image1, image2, raster, labels = image1.to(device), image2.to(device), raster.to(device), labels.to(device)
+# image1, image2, raster, labels = image1.to(device), image2.to(device), raster.to(device), labels.to(device)
 
 # writer.add_graph(model, (image1, image2, raster))
 
@@ -83,15 +83,14 @@ for epoch in range(config.MAX_EPOCH):
         # forward
         # img: (b, 3, 480, 640)
         # label:(b, 2, 240, 320),two class 
-        img1, img2, raster, labels = data
+        img1, img2, labels = data
         
         img1 = img1.to(device)
         img2 = img2.to(device)
-        raster = raster.to(device)
         labels = labels.to(device)
 
         # outputs:(b, 2, 240, 320)
-        outputs = model(img1, img2, raster)
+        outputs = model(img1, img2)
         grid_out = torchvision.utils.make_grid(outputs)
         writer.add_image('image2', grid_out, 3)
 
@@ -133,12 +132,11 @@ for epoch in range(config.MAX_EPOCH):
         model.eval()
         with torch.no_grad():
             for j, data in enumerate(valid_loader):
-                img1, img2, raster, labels = data
+                img1, img2, labels = data
                 img1 = img1.to(device)
                 img2 = img2.to(device)
-                raster = raster.to(device)
                 labels = labels.to(device)
-                outputs = model(img1, img2, raster)
+                outputs = model(img1, img2)
                 loss = criterion(outputs, labels)
 
                 _, predicted = torch.max(outputs.data, 1)

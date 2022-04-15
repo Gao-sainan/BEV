@@ -23,10 +23,6 @@ class ReplicaDataset(Dataset):
         image2 = cv.cvtColor(image2, cv.COLOR_BGR2RGB)
         label = cv.imread(path_label, cv.IMREAD_GRAYSCALE)
         
-        
-        
-        raster = torch.zeros(1, 60, 80)
-        
         label = torch.from_numpy(label)
         label = self.label_one_hot(label)
         
@@ -34,7 +30,7 @@ class ReplicaDataset(Dataset):
             image1 = self.transform(image1)
             image2 = self.transform(image2)
 
-        return image1, image2, raster, label
+        return image1, image2, label
     
     def label_one_hot(self, label):
         one_hot = []

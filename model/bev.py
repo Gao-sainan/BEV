@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
 from einops import rearrange
 from torchvision import models
 
 from features_extractor import BiFPN, BottleNeck, ResNet
-from cross_attention import Transformer, FeaturesEmbedding
+from cross_attention import PositionalEncoding, FeaturesEmbedding, Transformer
 
 
 class DoubleConv(nn.Module):
@@ -64,7 +64,9 @@ class Bev(nn.Module):
     def __init__(self, cls, layers=[3, 4, 6, 3]) -> None:
         super(Bev, self).__init__()
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        
         self.resnet = ResNet(BottleNeck, layers).to(self.device)
+        
         # initialize resnet with ImageNet Pretrained weight
         resnet50 = models.resnet50(pretrained=True)
         model_dict = self.resnet.state_dict()
@@ -76,29 +78,38 @@ class Bev(nn.Module):
         self.bifpn = BiFPN([256, 512, 1024, 2048]).to(self.device)
         self.embed1 = FeaturesEmbedding(1).to(self.device)
         self.embed2 = FeaturesEmbedding(2).to(self.device)
-        self.raster_pos_encode = FeaturesEmbedding(0)
+        self.raster_pos_encode = FeaturesEmbedding(0).to(self.device)
+        # pool mutil-scale features to (C, 1, 1)
+        self.raster_pool1 = nn.AvgPool2d(kernel_size=(118, 158), stride=2, padding=0)
+        self.raster_pool2 = nn.AvgPool2d(kernel_size=(58, 78), stride=2, padding=0)
+        self.raster_pool3 = nn.AvgPool2d(kernel_size=(28, 38), stride=2, padding=0)
+        self.raster_pool4 = nn.AvgPool2d(kernel_size=(13, 28), stride=2, padding=0)
+        
+        # TODO:conv mutil-scale features to raster size (4800, 1, 1)
+        self.raster_conv = nn.Conv2d(, 4800, kernel_size=)
+        
+        
         self.T = Transformer().to(self.device)
         self.seg = SegHead(64, cls).to(self.device)
         
     def forward(self, input1, input2, output_raster):
         # input1, input2, output_raster = x
         # use the same resnet and bifpn for two input images
-        
-        
+
         res_out1 = self.resnet(input1)
+        f1_p2, f1_p3, f1_p4, f1_p5 = self.bifpn(res_out1)
         res_out2 = self.resnet(input2)
-        multi_features1 = self.bifpn(res_out1)
-        multi_features2 = self.bifpn(res_out2)
+        f2_p2, f2_p3, f2_p4, f2_p5 = self.bifpn(res_out2)
         
-        multi_features1_embed = self.embed1(multi_features1[-1])
-        multi_features2_embed = self.embed2(multi_features2[-1])
+        multi_features1_embed = self.embed1(f1_p5)
+        multi_features2_embed = self.embed2(f2_p5)
         
         raster_pos_encode = self.raster_pos_encode.positional_encoding(output_raster.shape[-1] * output_raster.shape[-2])
         raster_pos_encode = raster_pos_encode.reshape(1, raster_pos_encode.shape[0], raster_pos_encode.shape[1])
         
         fusion_features = torch.cat((multi_features1_embed, multi_features2_embed), dim=1)
         transformer_input = (raster_pos_encode.to(torch.float32), fusion_features.to(torch.float32))
-        out, _ = self.T(transformer_input)
+        out= self.T(transformer_input)
         
         # fusion_features_list = []
         # out_list = []
