@@ -3,15 +3,16 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
-import math
 
 class PatchEmbedding(nn.Module):
     '''linear projection
         (32 * 3)-d vector (same with PE)'''
-    def __init__(self, patch_height, patch_width, patch_dim, embed_dim=32*2) -> None:
+    def __init__(self, embed_dim, patch_height=1, patch_width=1, patch_dim=88) -> None:
         super(PatchEmbedding, self).__init__()
         self.to_patch_embedding = nn.Sequential(
+            # (b, c, patch_num, patch_dim)
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_height, p2 = patch_width),
+            # (b, c, patch_num, patch_dim) -> (b, c, patch_num, embed_dim)
             nn.Linear(patch_dim, embed_dim)
             )
         
@@ -19,13 +20,24 @@ class PatchEmbedding(nn.Module):
         x = self.to_patch_embedding(x)
         return x
     
-class PositionalEncoding(nn.Module):
-    def __init__(self, cam_id, embed_dim=32) -> None:
-        super(PositionalEncoding, self).__init__()
-        self.embed_dim = embed_dim
-        self.cam_id = cam_id
-        
-    
+class PostionalEncoding(nn.Module):
+    def __init__(self, pe_dim, patch_num, device):
+        super(PostionalEncoding, self).__init__()
+        self.encoding = torch.zeros(patch_num, pe_dim, device=device)
+        self.encoding.requires_grad = False
+        pos = torch.arange(0, patch_num, device=device)
+        pos = pos.float().unsqueeze(dim=1)
+        _2i = torch.arange(0, pe_dim, step=2, device=device).float()
+
+        self.encoding[:, 0::2] = torch.sin(pos / (10000 ** (_2i / pe_dim)))
+        self.encoding[:, 1::2] = torch.cos(pos / (10000 ** (_2i / pe_dim)))
+
+    def forward(self, x):
+        batch_size, features, h, w = x.size()
+        patch_num = h * w
+        # (b, patch_num, patch_dim) -> (b, patch_num, pe_dim(=embed_dim))
+        return self.encoding[:patch_num, :]
+
     
 class FeaturesEmbedding(nn.Module):
     def __init__(self, cam_id, patch_height=1, patch_width=1, feature_size=88, embed_dim=32) -> None:
@@ -38,26 +50,13 @@ class FeaturesEmbedding(nn.Module):
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         
         self.patch_embedding = PatchEmbedding(self.patch_height, self.patch_width, patch_dim=patch_height*patch_width*feature_size).to(self.device)
-        # self.pos_encoding = self.PositionalEncoding(cam_id).to(self.device)
+        self.pos_encoding = PostionalEncoding(32, 5).to(self.device)
+        self.cam_pos = PostionalEncoding(32, 2).to(self.device)
 
-    def PositionalEncoding(self, patch_num):
-        cam_encoding = np.zeros((3, self.embed_dim))
-        for cam in range(cam_encoding.shape[0]):
-            for j in range(cam_encoding.shape[1]):
-                cam_encoding[cam][j] = math.sin(cam / (10000 ** (2*j/self.embed_dim))) if j % 2 == 0 else math.cos(cam / (10000 ** (2*j/self.embed_dim)))
-        
-        positinal_encoding = np.zeros((patch_num, self.embed_dim * 2))
-        for pos in range(positinal_encoding.shape[0]):
-            for i in range(self.embed_dim):
-                positinal_encoding[pos][i] = math.sin(pos / (10000 ** (2*i/self.embed_dim))) if i % 2 == 0 else math.cos(pos / (10000 ** (2*i/self.embed_dim)))
-            positinal_encoding[pos][self.embed_dim:] = cam_encoding[self.cam_id]
-        positinal_encoding = torch.from_numpy(positinal_encoding)
-        
-        return positinal_encoding
-        
+    
     def forward(self, x):
  
-        patch_num = (x.shape[2] // self.patch_height) * (x.shape[3] // self.patch_width)
+        patch_num = (x.size()[2] // self.patch_height) * (x.size()[3] // self.patch_width)
         patch_embed = self.patch_embedding(x)
         pos_encode = self.PositionalEncoding(patch_num).to(self.device)
         embed_out = patch_embed + pos_encode
@@ -66,7 +65,7 @@ class FeaturesEmbedding(nn.Module):
 
 class MultiHead_Attention(nn.Module):
     '''Multi-head Attention (cross attention)'''
-    def __init__(self, ma_dim=256, head_dim=32, n_heads=8, dropout=0.1, embed_dim=64):
+    def __init__(self, ma_dim=256, head_dim=32, n_heads=8, dropout=0.1, embed_dim=32):
         super(MultiHead_Attention, self).__init__()
         self.ma_dim = ma_dim
         self.embed_dim = embed_dim
@@ -105,7 +104,7 @@ class MultiHead_Attention(nn.Module):
 
 class FeedForward(nn.Module):
     '''tow layers with acitivate function of GELU or RELU'''
-    def __init__(self, embed_dim=64, hidden_dim=512, dropout=0.1):
+    def __init__(self, embed_dim=32, hidden_dim=512, dropout=0.1):
         super(FeedForward, self).__init__()
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         self.mlp = nn.Sequential(
@@ -122,7 +121,7 @@ class FeedForward(nn.Module):
     
 class Add_Norm(nn.Module):
     '''residual and layer norm'''
-    def __init__(self, embed_dim=64, dropout=0.1):
+    def __init__(self, embed_dim=32, dropout=0.1):
         super(Add_Norm, self).__init__()
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         self.norm  = nn.LayerNorm(embed_dim).to(self.device)
@@ -151,7 +150,7 @@ class TransfomerLayer(nn.Module):
     
 class Transformer(nn.Module):
 
-    def __init__(self, embed_dim=64, ma_dim=256, head_dim=32, n_heads=8, hidden_dim=512, dropout=0.1, N=6):
+    def __init__(self, embed_dim=32, ma_dim=256, head_dim=32, n_heads=8, hidden_dim=512, dropout=0.1, N=6):
         super(Transformer, self).__init__()
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         

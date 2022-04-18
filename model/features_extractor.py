@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import models
 
 
 class BottleNeck(nn.Module):
@@ -17,7 +18,7 @@ class BottleNeck(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * 4)
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
 
@@ -51,7 +52,7 @@ class ResNet(nn.Module):
         # 7x7 convolution, 64, stride=2
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
         
         # 3x3 max pool, stride=2
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -108,7 +109,7 @@ class ResNet(nn.Module):
         # x = x.view(x.size(0), -1)
         # x = self.fc(x)
         
-        return (c2, c3, c4, c5)
+        return [c2, c3, c4, c5]
     
 class DepthwiseConvBlock(nn.Module):
     
@@ -124,7 +125,7 @@ class DepthwiseConvBlock(nn.Module):
                                    padding, dilation, groups=1, bias=False)
         
         self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
         
     def forward(self, x):
         x = self.depthwise(x)
@@ -200,7 +201,25 @@ class BiFPN(nn.Module):
         
         features = [p2_x, p3_x, p4_x, p5_x]
         return self.bifpn(features)
-        
 
+class MultiScaleFeature(nn.Module):
+    def __init__(self) -> None:
+        super(MultiScaleFeature, self).__init__()
+        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        self.resnet = ResNet(BottleNeck, [3, 4, 6, 3]).to(self.device)
+            
+        # initialize resnet with ImageNet Pretrained weight
+        resnet50 = models.resnet50(pretrained=True)
+        model_dict = self.resnet.state_dict()
+        pretrained_dict = resnet50.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.resnet.load_state_dict(model_dict)
         
-        
+        self.bifpn = BiFPN([256, 512, 1024, 2048]).to(self.device)
+
+    def forward(self, x):
+        x = self.resnet(x)
+        x = self.bifpn(x)
+        return x
+

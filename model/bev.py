@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 
 from einops import rearrange
-from torchvision import models
 
-from features_extractor import BiFPN, BottleNeck, ResNet
-from cross_attention import PositionalEncoding, FeaturesEmbedding, Transformer
+from features_extractor import BiFPN, BottleNeck, ResNet, MultiScaleFeature
+from cross_attention import PostionalEncoding, PatchEmbedding, Transformer
 
 
 class DoubleConv(nn.Module):
@@ -18,10 +17,10 @@ class DoubleConv(nn.Module):
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(mid_channels),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU()
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
@@ -43,8 +42,9 @@ class Up(nn.Module):
 
     def forward(self, x):
         x = self.up(x)
+        x = self.conv(x)
         
-        return self.conv(x)
+        return x
 
 class SegHead(nn.Module):
     def __init__(self, in_channels, out_channels, N=2) -> None:
@@ -55,78 +55,107 @@ class SegHead(nn.Module):
         
         
     def forward(self, x):
-        x = rearrange(x, 'b (h w) (c) -> b c h w', h=60, w=80)
+        x = x.view(x.size()[0], x.size()[-1], 60, 80)
         x = self.up(x)
+        x = self.out(x)
         
-        return self.out(x)
+        return x
         
 class Bev(nn.Module):
-    def __init__(self, cls, layers=[3, 4, 6, 3]) -> None:
+    def __init__(self, cls) -> None:
         super(Bev, self).__init__()
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         
-        self.resnet = ResNet(BottleNeck, layers).to(self.device)
+        self.multiscalefeature1 = MultiScaleFeature()
+        self.multiscalefeature2 = MultiScaleFeature()
+
+
+        # input(b, 88, 15, 20) -> (b, 15*20, 88) -> (b, 300, 64)
+        self.patch_embed = PatchEmbedding(32)
+        self.cam_pos_encode = PostionalEncoding(32, 2, device=self.device)
+        self.input_pos_encode = PostionalEncoding(32, 300, device=self.device)
         
-        # initialize resnet with ImageNet Pretrained weight
-        resnet50 = models.resnet50(pretrained=True)
-        model_dict = self.resnet.state_dict()
-        pretrained_dict = resnet50.state_dict()
-        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-        model_dict.update(pretrained_dict)
-        self.resnet.load_state_dict(model_dict)
-        
-        self.bifpn = BiFPN([256, 512, 1024, 2048]).to(self.device)
-        self.embed1 = FeaturesEmbedding(1).to(self.device)
-        self.embed2 = FeaturesEmbedding(2).to(self.device)
-        self.raster_pos_encode = FeaturesEmbedding(0).to(self.device)
+        # raster(b, 1, 60, 80) -> (b, 60*80, 1) -> (b, 4800, 64)
+        self.raster_patch_embed = PatchEmbedding(32, patch_dim=1)
+        self.raster_pos_encode = PostionalEncoding(32, 4800, device=self.device)
+
         # pool mutil-scale features to (C, 1, 1)
-        self.raster_pool1 = nn.AvgPool2d(kernel_size=(118, 158), stride=2, padding=0)
-        self.raster_pool2 = nn.AvgPool2d(kernel_size=(58, 78), stride=2, padding=0)
-        self.raster_pool3 = nn.AvgPool2d(kernel_size=(28, 38), stride=2, padding=0)
-        self.raster_pool4 = nn.AvgPool2d(kernel_size=(13, 28), stride=2, padding=0)
+        self.raster_pool1 = nn.AvgPool2d(kernel_size=(118, 158))
+        self.raster_pool2 = nn.AvgPool2d(kernel_size=(58, 78))
+        self.raster_pool3 = nn.AvgPool2d(kernel_size=(28, 38))
+        self.raster_pool4 = nn.AvgPool2d(kernel_size=(13, 18))
         
         # TODO:conv mutil-scale features to raster size (4800, 1, 1)
-        self.raster_conv = nn.Conv2d(, 4800, kernel_size=)
+        self.raster_conv = nn.Conv2d(88*4, 4800, kernel_size=1)
         
         
         self.T = Transformer().to(self.device)
-        self.seg = SegHead(64, cls).to(self.device)
+        self.seg = SegHead(32, cls).to(self.device)
         
-    def forward(self, input1, input2, output_raster):
+    def forward(self, input1, input2):
         # input1, input2, output_raster = x
-        # use the same resnet and bifpn for two input images
 
-        res_out1 = self.resnet(input1)
-        f1_p2, f1_p3, f1_p4, f1_p5 = self.bifpn(res_out1)
-        res_out2 = self.resnet(input2)
-        f2_p2, f2_p3, f2_p4, f2_p5 = self.bifpn(res_out2)
+        f1_p2, f1_p3, f1_p4, f1_p5 = self.multiscalefeature1(input1)
+        f2_p2, f2_p3, f2_p4, f2_p5 = self.multiscalefeature2(input2)
+
+        # (b, 88, 1, 1)
+        c2  = self.raster_pool1(f1_p2)
+        c3  = self.raster_pool2(f1_p3)
+        c4  = self.raster_pool3(f1_p4)
+        c5  = self.raster_pool4(f1_p5)
+        context1 = torch.cat((c2, c3, c4, c5), dim=1)
+
+        c2_  = self.raster_pool1(f2_p2)
+        c3_  = self.raster_pool2(f2_p3)
+        c4_  = self.raster_pool3(f2_p4)
+        c5_  = self.raster_pool4(f2_p5)
+        context2 = torch.cat((c2_, c3_, c4_, c5_), dim=1)
+
+        # (b, 4800, 1, 1)
+        context1 = self.raster_conv(context1)
+        context2 = self.raster_conv(context2)
+        # (b, 1, 60, 80) same as raster size
+        context1 = rearrange(context1, 'b (h w) p1 p2 -> b (p1 p2) h w', h=60, w =80)
+        context2 = rearrange(context2, 'b (h w) p1 p2 -> b (p1 p2) h w', h=60, w =80)
+        context_summary = context1 + context2
+
+        multi_features1_embed = self.patch_embed(f1_p5)
+        multi_features2_embed = self.patch_embed(f2_p5)
+        pos_encode1 = self.input_pos_encode(f1_p5)
+        pos_encode2 = self.input_pos_encode(f2_p5)
+        cam_pos = self.cam_pos_encode(f1_p5)
+
+        # (b, patch_num(300), 64)
+        embed1 = multi_features1_embed + (pos_encode1 + cam_pos[0])
+        embed2 = multi_features2_embed + (pos_encode2 + cam_pos[1])
+
+        # raster(b, 1, 60, 80) -> (b, 60*80, 1) -> (b, 4800, 32)
+        raster_embed = self.raster_patch_embed(context_summary)
+        raster_pos = self.raster_pos_encode(context_summary)
+        embed_ = raster_embed + raster_pos
         
-        multi_features1_embed = self.embed1(f1_p5)
-        multi_features2_embed = self.embed2(f2_p5)
+        # fusion_features = torch.cat((embed1, embed2), dim=1)
+        # transformer_input = (embed_.to(torch.float32), fusion_features.to(torch.float32))
+        # out= self.T(transformer_input)
+
         
-        raster_pos_encode = self.raster_pos_encode.positional_encoding(output_raster.shape[-1] * output_raster.shape[-2])
-        raster_pos_encode = raster_pos_encode.reshape(1, raster_pos_encode.shape[0], raster_pos_encode.shape[1])
-        
-        fusion_features = torch.cat((multi_features1_embed, multi_features2_embed), dim=1)
-        transformer_input = (raster_pos_encode.to(torch.float32), fusion_features.to(torch.float32))
-        out= self.T(transformer_input)
-        
-        # fusion_features_list = []
-        # out_list = []
-        # for i in range(len(multi_features1_embed)):
-        #     fusion_features = torch.cat((multi_features1_embed[i], multi_features2_embed[i]), dim=1)
-        #     fusion_features_list.append(fusion_features)
-            
-        #     transformer_input = (raster_pos_encode.to(torch.float32), fusion_features.to(torch.float32))
-        #     T = Transformer()
-        #     out, _ = T(transformer_input)
-        #     out_list.append(out)
-        # out_cat = torch.cat((out_list), dim=-1)
-        
-        predict = self.seg(out)
+        predict = self.seg(self.T((embed_, torch.cat((embed1, embed2), dim=1))))
         return predict
     
-    
+# device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+# criterion = nn.BCELoss()
+
+# a = torch.randn(5, 3, 480, 640).to(device)
+# b = torch.randn(5, 3, 480, 640).to(device) 
+
+# bev = Bev(2)
+# bev.to(device)
+# # criterion.to(device)
+# o = bev(a, b)
+
+# print(o)
+# print(o.shape)
+# # print(loss)
     
 
 

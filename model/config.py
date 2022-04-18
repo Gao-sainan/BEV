@@ -51,9 +51,9 @@ class Config:
         
         self.dropout = 0.1
         
-        self.MAX_EPOCH = 5
-        self.BATCH_SIZE = 5
-        self.LR = 0.01
+        self.MAX_EPOCH = 10
+        self.BATCH_SIZE = 8
+        self.LR = 0.1
         self.log_interval = 5
         self.val_interval = 1
         

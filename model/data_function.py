@@ -1,9 +1,12 @@
-
+from PIL import Image
 import cv2 as cv
+from cv2 import transform
 from torch.utils.data import Dataset
 import os
 import torch
 import matplotlib.pyplot as plt
+import torchvision.transforms as transforms
+
 
 
 
@@ -17,24 +20,25 @@ class ReplicaDataset(Dataset):
         
     def __getitem__(self, index):
         path_image1, path_image2, path_label = self.data_info[index]
-        image1 = cv.imread(path_image1)
-        image1 = cv.cvtColor(image1, cv.COLOR_BGR2RGB)
-        image2 = cv.imread(path_image2)
-        image2 = cv.cvtColor(image2, cv.COLOR_BGR2RGB)
-        label = cv.imread(path_label, cv.IMREAD_GRAYSCALE)
-        
-        label = torch.from_numpy(label)
+        image1 = Image.open(path_image1).convert('RGB')
+        image2 = Image.open(path_image2).convert('RGB')
+        label = Image.open(path_label)
+        # label[label==255] =1
+        # label = torch.to(label).to(torch.float32)
+        label = transforms.functional.to_tensor(label)
         label = self.label_one_hot(label)
         
         if self.transform:
             image1 = self.transform(image1)
             image2 = self.transform(image2)
 
+
         return image1, image2, label
     
     def label_one_hot(self, label):
+        label = label.squeeze(0)
         one_hot = []
-        for i in [0, 255]:
+        for i in range(2):
             temp_prob = label==i 
             one_hot.append(temp_prob.unsqueeze(0))
         output = torch.cat(one_hot, dim=0)

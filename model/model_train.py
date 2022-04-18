@@ -51,24 +51,11 @@ valid_curve = list()
 iter_count = 0  
 
 # 构建 SummaryWriter
-writer = SummaryWriter()  
-image1, image2, raster, labels = next(iter(train_loader))
+writer = SummaryWriter(config.log_dir)  
 
+# image1, image2, labels = image1.to(device), image2.to(device), labels.to(device)
 
-grid = torchvision.utils.make_grid(image1)
-writer.add_image('image1', grid, 0)
-
-grid1 = torchvision.utils.make_grid(image2)
-writer.add_image('image2', grid1, 1)
-
-_, label = torch.max(labels, 1)
-label = label.unsqueeze(1)
-grid2 = torchvision.utils.make_grid(label)
-writer.add_image('labels', grid2, 2)
-
-# image1, image2, raster, labels = image1.to(device), image2.to(device), raster.to(device), labels.to(device)
-
-# writer.add_graph(model, (image1, image2, raster))
+# writer.add_graph(model, (image1, image2))
 
 for epoch in range(config.MAX_EPOCH):
 
@@ -89,18 +76,31 @@ for epoch in range(config.MAX_EPOCH):
         img2 = img2.to(device)
         labels = labels.to(device)
 
-        # outputs:(b, 2, 240, 320)
+        grid = torchvision.utils.make_grid(img1)
+        writer.add_image('image1', grid, 0)
+
+        grid1 = torchvision.utils.make_grid(img2)
+        writer.add_image('image2', grid1, 1)
+
+        grid2 = torchvision.utils.make_grid(labels)
+        writer.add_image('labels', grid2, 2)
+        
+        # outputs:(b, 1, 240, 320)
         outputs = model(img1, img2)
         grid_out = torchvision.utils.make_grid(outputs)
-        writer.add_image('image2', grid_out, 3)
+        writer.add_image('output', grid_out, 3)
 
         # backward
         optimizer.zero_grad()
         loss = criterion(outputs, labels)
+        # for p in model.parameters():
+        #     if p.grad is not None:
+        #         print(p.grad.data)
         loss.backward()
 
         # update weights
         optimizer.step()
+        
 
         # 统计分类情况
         # predicted:(b, 240, 320)
@@ -121,6 +121,15 @@ for epoch in range(config.MAX_EPOCH):
                 epoch, config.MAX_EPOCH, i+1, len(train_loader), loss_mean, dice_loss))
             loss_mean = 0.
 
+        # 记录数据，保存于event file
+        writer.add_scalars("Loss", {"Train": loss.item()}, iter_count)
+        writer.add_scalars("Accuracy", {"Train": dice_loss}, iter_count)
+
+    # 每个epoch，记录梯度，权值
+    for name, param in model.named_parameters():
+        writer.add_histogram(name + '_grad', param.grad, epoch)
+        writer.add_histogram(name + '_data', param, epoch)
+
     scheduler.step()  # 更新学习率
     # 每个 epoch 计算验证集得准确率和loss
     # validate the model
@@ -136,23 +145,26 @@ for epoch in range(config.MAX_EPOCH):
                 img1 = img1.to(device)
                 img2 = img2.to(device)
                 labels = labels.to(device)
-                outputs = model(img1, img2)
-                loss = criterion(outputs, labels)
 
-                _, predicted = torch.max(outputs.data, 1)
-                predicted = predicted.cpu().detach().numpy()
-                for b in range(predicted.shape[0]):
-                    out_image = predicted[b]
-                    out_image = out_image * 255
+                outputs = model(img1, img2)
+                loss_ = criterion(outputs, labels)
+
+                _, predicted_val = torch.max(outputs.data, 1)
+                predicted_val = predicted_val.cpu().detach().numpy()
+                for b in range(predicted_val.shape[0]):
+                    out_image = predicted_val[b]
+                    # out_image = out_image * 255
                     if not os.path.isdir(config.output_dir):
                         os.makedirs(config.output_dir)
-                    cv.imwrite(config.output_dir + f'epoch{epoch}_batch{i}_no{b}_out.png', out_image)
+                    plt.imshow(out_image, cmap='gray')
+                    plt.show()
+                    plt.imsave(config.output_dir + f'epoch{epoch}_batch{j}_no{b}_out.png', out_image, cmap='gray')
                 # total_val += (labels.size(0) * labels.size(2) * labels.size(3))
                 # _, labels = torch.max(labels, 1)
                 # correct_val += (predicted == labels).squeeze().sum().numpy()
                 dice_loss_val = dice(outputs, labels)
 
-                loss_val += loss.item()
+                loss_val += loss_.item()
 
             valid_curve.append(loss_val/valid_loader.__len__())
             print("Valid:\t Epoch[{:0>3}/{:0>3}] Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Dice:{:.2%}".format(
