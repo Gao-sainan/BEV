@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
-
+from config import Config
+c = Config()
 
 class BottleNeck(nn.Module):
     expansion = 4
@@ -123,8 +124,12 @@ class DepthwiseConvBlock(nn.Module):
                                    padding, dilation, groups=in_channels, bias=False)
         self.ponitwise = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
                                    padding, dilation, groups=1, bias=False)
+        nn.init.kaiming_uniform_(self.depthwise.weight)
+        nn.init.kaiming_uniform_(self.ponitwise.weight)
         
         self.bn = nn.BatchNorm2d(out_channels)
+        nn.init.zeros_(self.bn.bias)
+        nn.init.uniform_(self.bn.weight)
         self.relu = nn.ReLU(inplace=True)
         
     def forward(self, x):
@@ -150,9 +155,9 @@ class BiFPNBlock(nn.Module):
         self.p4_out = DepthwiseConvBlock(feature_size, feature_size)
         self.p5_out = DepthwiseConvBlock(feature_size, feature_size)
         
-        self.w1 = nn.Parameter(torch.Tensor(2, 3))
+        self.w1 = nn.Parameter(torch.ones((2, 3), requires_grad=True))
         self.w1_relu = nn.ReLU()
-        self.w2 = nn.Parameter(torch.Tensor(3, 3))
+        self.w2 = nn.Parameter(torch.ones((3, 3), requires_grad=True))
         self.w2_relu = nn.ReLU()
         
     def forward(self, x):
@@ -180,12 +185,17 @@ class BiFPNBlock(nn.Module):
             
 class BiFPN(nn.Module):
     '''extract multiple scale features'''
-    def __init__(self, size, feature_size=88, num_layers=4, epsilon=0.0001) -> None:
+    def __init__(self, size, feature_size=88, num_layers=2, epsilon=0.0001) -> None:
         super(BiFPN, self).__init__()
         self.p2 = nn.Conv2d(size[0], feature_size, kernel_size=1, stride=1, padding=0)
         self.p3 = nn.Conv2d(size[1], feature_size, kernel_size=1, stride=1, padding=0)
         self.p4 = nn.Conv2d(size[2], feature_size, kernel_size=1, stride=1, padding=0)
         self.p5 = nn.Conv2d(size[3], feature_size, kernel_size=1, stride=1, padding=0)
+        nn.init.xavier_normal_(self.p2.weight)
+        nn.init.xavier_normal_(self.p3.weight)
+        nn.init.xavier_normal_(self.p4.weight)
+        nn.init.xavier_normal_(self.p5.weight)
+        
         
         bifpn = []
         for _ in range(num_layers):
@@ -205,9 +215,8 @@ class BiFPN(nn.Module):
 class MultiScaleFeature(nn.Module):
     def __init__(self) -> None:
         super(MultiScaleFeature, self).__init__()
-        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-        self.resnet = ResNet(BottleNeck, [3, 4, 6, 3]).to(self.device)
-            
+
+        self.resnet = ResNet(BottleNeck, [3, 4, 6, 3]).to(c.device)
         # initialize resnet with ImageNet Pretrained weight
         resnet50 = models.resnet50(pretrained=True)
         model_dict = self.resnet.state_dict()
@@ -216,7 +225,7 @@ class MultiScaleFeature(nn.Module):
         model_dict.update(pretrained_dict)
         self.resnet.load_state_dict(model_dict)
         
-        self.bifpn = BiFPN([256, 512, 1024, 2048]).to(self.device)
+        self.bifpn = BiFPN([256, 512, 1024, 2048]).to(c.device)
 
     def forward(self, x):
         x = self.resnet(x)

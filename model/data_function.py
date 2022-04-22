@@ -23,10 +23,10 @@ class ReplicaDataset(Dataset):
         image1 = Image.open(path_image1).convert('RGB')
         image2 = Image.open(path_image2).convert('RGB')
         label = Image.open(path_label)
-        # label[label==255] =1
-        # label = torch.to(label).to(torch.float32)
+        
         label = transforms.functional.to_tensor(label)
         label = self.label_one_hot(label)
+        raster = torch.zeros(size=(1, 60, 80))
         
         if self.transform:
             image1 = self.transform(image1)
@@ -52,7 +52,9 @@ class ReplicaDataset(Dataset):
         label_names = os.listdir(label_path)
         image_names = list(filter(lambda x: x.endswith('.jpg'), image_names))
         label_names = list(filter(lambda x: x.endswith('.png'), label_names))
-
+        image_names.sort()
+        label_names.sort()
+        
         data_info = []
         for i in range(0, len(image_names), 2):
             image1 = image_names[i]

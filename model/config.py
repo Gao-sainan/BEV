@@ -1,7 +1,9 @@
+import torch
 
 class Config:
     '''将所有参数封装一个类，方便调用'''
     def __init__(self):
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
         # two class
         self.cls = 2
@@ -21,8 +23,6 @@ class Config:
         # patch 大小
         self.patch_dim_l = self.patch_height * self.patch_width * self.channels
         
-        
-        
         # 输出空间参数
         self.raster_patch_height = 1
         self.raster_patch_width = 1
@@ -39,28 +39,29 @@ class Config:
         # embedding长度--自己设计
         self.embed_dim = 64
         # 注意头数量,以及每个头内的编码长度
-        self.n_heads = 8 
-        self.head_dim = 32
+        self.n_heads = 4 
+        self.head_dim = 128
         # k、v多头注意总长度
         self.ma_dim = self.head_dim * self.n_heads
         # mlp 隐藏层长度
-        self.hidden_dim = 512
+        self.hidden_dim = 1024
         
         # encoder-decoder 数量
-        self.N = 6
+        self.N = 3
         
         self.dropout = 0.1
         
-        self.MAX_EPOCH = 10
-        self.BATCH_SIZE = 8
-        self.LR = 0.1
+        self.MAX_EPOCH = 100
+        self.BATCH_SIZE = 4
+        self.LR = 0.01
         self.log_interval = 5
         self.val_interval = 1
         
-        self.log_dir = 'model_log/'
+        self.log_dir = 'model_log2/'
+        self.cp_dir = 'model_cp/bev.pt'
         self.train_dir = 'data/apartment_0/train/' 
-        self.valid_dir = 'data/apartment_0/valid/'
+        self.test_dir = 'data/apartment_0/test/'
         
-        self.test_dir = 'data/test/'
-        self.output_dir = 'output/'
+        
+        self.output_dir = 'output_n3/'
         

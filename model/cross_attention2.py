@@ -1,9 +1,10 @@
+from turtle import forward
 import numpy as np
 import torch
 import torch.nn as nn
 from einops import rearrange
 from config import Config
-from einops.layers.torch import Rearrange
+from einops.layers.torch import Rearrange, repeat
 
 c = Config()
 
@@ -60,7 +61,31 @@ class PostionalEncoding(nn.Module):
         # (b, patch_num, patch_dim) -> (b, patch_num, pe_dim(=embed_dim))
         return self.encoding[:patch_num, :]
 
-    
+class Embedding(nn.Module):
+    def __init__(self, h, w) -> None:
+        super(Embedding, self).__init__()
+
+        self.patch_embed = PatchEmbedding(96)
+        self.cam_pos_encode = nn.Parameter(torch.randn(2, 32))
+        self.cam_pos_encode.requires_grad = True
+        self.input_pos_encode = PostionalEncoding(32, h, w)
+        
+    def forward(self, x):
+        f1, f2 = x
+        patch_embed1 = self.patch_embed(f1)
+        patch_embed2 = self.patch_embed(f2)
+        pos_encode1 = self.input_pos_encode(f1)
+        pos_encode2 = self.input_pos_encode(f2)
+        cam_pos = self.cam_pos_encode
+
+        # (b, patch_num(300), 64)
+        cam0 = repeat(cam_pos[0], 'd -> (repeat r) d', r =1, repeat=x.size()[-1] * x.size()[-2])
+        cam1 = repeat(cam_pos[1], 'd -> (repeat r) d', r =1, repeat=x.size()[-1] * x.size()[-2])
+
+        embed1 = patch_embed1 + torch.cat((pos_encode1, cam0), dim=-1)
+        embed2 = patch_embed2 + torch.cat((pos_encode2, cam1), dim=-1)
+        
+        return embed1, embed2
 
 
 class MultiHead_Attention(nn.Module):
@@ -90,7 +115,6 @@ class MultiHead_Attention(nn.Module):
         q = self.to_q(raster)
         k1 = self.to_k(image)
         v1 = self.to_v(image)
-    
         
         q = rearrange(q, 'b n (h d) -> b h n d', h = self.n_heads)
         k1 = rearrange(k1, 'b n (h d) -> b h n d', h = self.n_heads)

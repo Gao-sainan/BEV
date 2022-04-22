@@ -31,7 +31,7 @@ class FeaturesEmbedding(nn.Module):
         self.patch_width_s = patch_width_s
         self.cam_id = cam_id
         self.embed_dim = embed_dim
-        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
         
         self.patch_embedding_l = PatchEmbedding(patch_height_l, patch_width_l, patch_dim=patch_height_l*patch_width_l*feature_size)

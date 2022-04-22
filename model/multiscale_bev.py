@@ -3,8 +3,8 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from config import Config
 
-from features_extractor import BiFPN, BottleNeck, ResNet, MultiScaleFeature
-from cross_attention import PostionalEncoding, PatchEmbedding, Transformer
+from features_extractor import MultiScaleFeature
+from cross_attention2 import PostionalEncoding, PatchEmbedding, Embedding, Transformer
 
 c = Config()
 class DoubleConv(nn.Module):
@@ -13,7 +13,7 @@ class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(DoubleConv, self).__init__()
             
-        self.double_conv = nn.Sequential(
+        self.triple_conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
@@ -36,7 +36,7 @@ class DoubleConv(nn.Module):
                 
 
     def forward(self, x):
-        return self.double_conv(x)
+        return self.triple_conv(x)
     
       
 class Up(nn.Module):
@@ -61,7 +61,7 @@ class Up(nn.Module):
         return x
 
 class SegHead(nn.Module):
-    def __init__(self, out_channels, in_channels=64,) -> None:
+    def __init__(self, out_channels, in_channels) -> None:
         super(SegHead, self).__init__()
         
         self.up1 = Up(in_channels, in_channels // 2)
@@ -74,7 +74,7 @@ class SegHead(nn.Module):
         
     def forward(self, x):
         
-        x = x.view(x.size()[0], x.size()[-1], 60, 80)
+        x = rearrange(x, 'b (h w) c -> b c h w', h=60, w=80)
         
         x = self.up1(x)
         x = self.up2(x)
@@ -91,12 +91,12 @@ class Bev(nn.Module):
         self.multiscalefeature2 = MultiScaleFeature()
 
 
-        # input(b, 88, 15, 20) -> (b, 15*20, 88) -> (b, 300, 96)
-        self.patch_embed = PatchEmbedding(96)
-        self.cam_pos_encode = nn.Parameter(torch.randn(2, 32))
-        self.cam_pos_encode.requires_grad = True
-        self.input_pos_encode = PostionalEncoding(32, 15, 20)
-        
+        # input(b, 88, h, w) -> (b, h*w, 88) -> (b, h*w, 96)
+        self.embed_p2 = Embedding(120, 160)
+        self.embed_p3 = Embedding(60, 80)
+        self.embed_p4 = Embedding(30, 40)
+        self.embed_p5 = Embedding(15, 20)
+
         # raster(b, 1, 60, 80) -> (b, 60*80, 1) -> (b, 4800, 64)
         self.raster_patch_embed = PatchEmbedding(64, patch_dim=1)
         self.raster_pos_encode = PostionalEncoding(32, 60, 80)
@@ -114,7 +114,7 @@ class Bev(nn.Module):
         
         self.T = Transformer(n_transformer).to(c.device)
         
-        self.seg = SegHead(2).to(c.device)
+        self.seg = SegHead(2, 128).to(c.device)
 
         
     def forward(self, input1, input2):
@@ -144,29 +144,27 @@ class Bev(nn.Module):
         context2 = rearrange(context2, 'b (h w) p1 p2 -> b (p1 p2) h w', h=60, w =80)
         context_summary = context1 + context2
 
-        multi_features1_embed = self.patch_embed(f1_p5)
-        multi_features2_embed = self.patch_embed(f2_p5)
-        pos_encode1 = self.input_pos_encode(f1_p5)
-        pos_encode2 = self.input_pos_encode(f2_p5)
-        cam_pos = self.cam_pos_encode
-
-        # (b, patch_num(300), 64)
-        cam0 = repeat(cam_pos[0], 'd -> (repeat r) d', r =1, repeat=300)
-        cam1 = repeat(cam_pos[1], 'd -> (repeat r) d', r =1, repeat=300)
-
-        embed1 = multi_features1_embed + torch.cat((pos_encode1, cam0), dim=-1)
-        embed2 = multi_features2_embed + torch.cat((pos_encode2, cam1), dim=-1)
+        f1_p2_embed, f2_p2_embed = self.embed_p2(f1_p2, f2_p2)
+        f1_p3_embed, f2_p3_embed = self.embed_p3(f1_p3, f2_p3)
+        f1_p4_embed, f2_p4_embed = self.embed_p4(f1_p4, f2_p4)
+        f1_p5_embed, f2_p5_embed = self.embed_p5(f1_p5, f2_p5)
 
         # raster(b, 1, 60, 80) -> (b, 60*80, 1) -> (b, 4800, 32)
         raster_embed = self.raster_patch_embed(context_summary)
         raster_pos = self.raster_pos_encode(context_summary)
         embed_ = raster_embed + raster_pos
         
-        # fusion_features = torch.cat((embed1, embed2), dim=1)
-        # transformer_input = (embed_.to(torch.float32), fusion_features.to(torch.float32))
-        # out= self.T(transformer_input)
         
-        predict = self.seg(self.T((embed_, embed1, embed2)))
+        # (b, 4800, 32)
+        out_p2= self.T((embed_, f1_p2_embed, f2_p2_embed))
+        out_p3= self.T((embed_, f1_p3_embed, f2_p3_embed))
+        out_p4= self.T((embed_, f1_p4_embed, f2_p4_embed))
+        out_p5= self.T((embed_, f1_p5_embed, f2_p5_embed))
+        
+        # (b, 4800, 128)
+        out_cat = torch.cat((out_p2, out_p3, out_p4, out_p5), dim=-1)
+        
+        predict = self.seg(out_cat)
         return predict
     
 

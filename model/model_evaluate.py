@@ -16,8 +16,9 @@ import cv2 as cv
 import os
 from metrics import iou_pytorch
 from torch.utils.data import random_split
+from torchmetrics import ConfusionMatrix, JaccardIndex
 
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 
 config = Config()
     
@@ -50,12 +51,11 @@ valid_loader = DataLoader(
     num_workers=8)
 
 test_loader = DataLoader(
-    test,
-    batch_size=config.BATCH_SIZE,
-    shuffle=True,
+    test, 
+    batch_size=config.BATCH_SIZE, 
     num_workers=8)
-
-model = Bev(config.N)
+                 
+model = Bev(1)
 
 criterion = nn.BCEWithLogitsLoss()
 
@@ -73,6 +73,9 @@ iter_count = 0
 # 构建 SummaryWriter
 writer = SummaryWriter(config.log_dir)  
 
+# image1, image2, labels = image1.to(device), image2.to(device), labels.to(device)
+
+# writer.add_graph(model, (image1, image2))
 
 for epoch in range(config.MAX_EPOCH):
 
@@ -89,9 +92,9 @@ for epoch in range(config.MAX_EPOCH):
         # img: (b, 3, 480, 640)
         # label:(b, 2, 240, 320),two class 
         img1, img2, labels = data
-        # img1 = torch.autograd.Variable(img1)
-        # img2 = torch.autograd.Variable(img2)
-        # labels = torch.autograd.Variable(labels)
+        img1 = torch.autograd.Variable(img1)
+        img2 = torch.autograd.Variable(img2)
+        labels = torch.autograd.Variable(labels)
         
         img1 = img1.to(device)
         img2 = img2.to(device)
@@ -113,6 +116,12 @@ for epoch in range(config.MAX_EPOCH):
         writer.add_image('output', grid_out, iter_count)
 
         loss = criterion(outputs, labels)
+        # loss = loss.requires_grad_()
+        
+        # for name, p in model.named_parameters():
+        #     if p.grad is not None:
+        #         print(name)
+        #         print(p.grad)
         
         # backward
         optimizer.zero_grad()
@@ -196,66 +205,22 @@ for epoch in range(config.MAX_EPOCH):
             
                 
 torch.save(model.state_dict(), config.cp_dir)
-
-print('----------------------------------Finish Training!----------------------------------')
-
-# test
-
-# Confmat = ConfusionMatrix(num_classes=2)
-# Acc = Accuracy()
-# IoU = JaccardIndex(num_classes=2)
-
-correct = 0.
-total = 0.
-loss = 0.
-model.eval()
-for i, data in enumerate(test_loader):
-
-    img1, img2, labels = data
-    
-    img1 = img1.to(device)
-    img2 = img2.to(device)
-    labels = labels.to(device)
-    with torch.no_grad():
-        outputs = model(img1, img2)
-        loss_ = criterion(outputs, labels)
-        loss += loss_.item()
-    # cm = Confmat(outputs, labels)
-    # acc = Acc(outputs, labels)
-    # iou = IoU(outputs, labels)
-    
-    _, predicted = torch.max(outputs.data, 1)
-    total += (labels.size()[0] * labels.size()[2] * labels.size()[3])
-    _, label = torch.max(labels, 1)
-    correct += (predicted.detach().cpu() == label.detach().cpu()).squeeze().sum().numpy()
-    iou_test = iou_pytorch(predicted, label)
-        
-
-    write_label = rearrange(label.cpu(), 'b h w -> h (b w)')
-    write_predict = rearrange(predicted.cpu(), 'b h w -> h (b w)')
-    write_image = torch.cat((write_label, write_predict), dim=0)
-    cv.imwrite(f'test_batch{i}_pred.png', write_image.numpy()*255)
-    # print("Test:\t Iteration[{:0>3}/{:0>3}] ConfuseMatirx:{}".format(i, len(test_loader)))
-    print("Test:\t Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc:{:.2%} IOU:{:.2%}".format(i, len(test_loader), loss, correct / total, iou_test))
-    # print("Test:\t Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc_api:{:.2%} IOU_api:{:.2%}".format(loss, acc, iou))
-    print("-----------next-----------------")
-
-    
+            
             
 
-# train_x = range(len(train_curve))
-# train_y = train_curve
+train_x = range(len(train_curve))
+train_y = train_curve
 
-# train_iters = len(train_loader)
-# valid_x = np.arange(1, len(valid_curve)+1) * train_iters*config.val_interval # 由于valid中记录的是epochloss，需要对记录点进行转换到iterations
-# valid_y = valid_curve
+train_iters = len(train_loader)
+valid_x = np.arange(1, len(valid_curve)+1) * train_iters*config.val_interval # 由于valid中记录的是epochloss，需要对记录点进行转换到iterations
+valid_y = valid_curve
 
-# plt.plot(train_x, train_y, label='Train')
-# plt.plot(valid_x, valid_y, label='Valid')
+plt.plot(train_x, train_y, label='Train')
+plt.plot(valid_x, valid_y, label='Valid')
 
-# plt.legend(loc='upper right')
-# plt.ylabel('loss value')
-# plt.xlabel('Iteration')
-# plt.savefig('bev_curve.jpg')
-# plt.show()
+plt.legend(loc='upper right')
+plt.ylabel('loss value')
+plt.xlabel('Iteration')
+plt.savefig('bev_curve.jpg')
+plt.show()
 
