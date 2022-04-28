@@ -1,0 +1,227 @@
+import numpy as np
+import torch
+import torch.nn as nn
+from einops import rearrange
+from config import Config
+from einops.layers.torch import Rearrange
+
+c = Config()
+
+class PatchEmbedding(nn.Module):
+    '''linear projection
+        (32 * 3)-d vector (same with PE)'''
+    def __init__(self, embed_dim, patch_height=c.patch_height, patch_width=c.patch_width, patch_dim=88) -> None:
+        super(PatchEmbedding, self).__init__()
+        self.to_patch_embedding = nn.Sequential(
+            # (b, c, patch_num, patch_dim)
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_height, p2 = patch_width),
+            # (b, c, patch_num, patch_dim) -> (b, c, patch_num, embed_dim)
+            nn.Linear(patch_dim, embed_dim)
+            )
+        
+        for m in self.to_patch_embedding.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0.)
+
+        
+    def forward(self, x):
+        x = self.to_patch_embedding(x)
+        return x
+    
+class PostionalEncoding(nn.Module):
+    def __init__(self, pe_dim, x, y):
+        super(PostionalEncoding, self).__init__()
+        self.encoding_x = torch.zeros(x, pe_dim).to(c.device)
+        self.encoding_x.requires_grad = False
+        self.encoding_y = torch.zeros(y, pe_dim).to(c.device)
+        self.encoding_y.requires_grad = False
+        pos_x = torch.arange(0, x).to(c.device)
+        pos_x = pos_x.float().unsqueeze(dim=1)
+        pos_y = torch.arange(0, y).to(c.device)
+        pos_y = pos_y.float().unsqueeze(dim=1)
+        _2i = torch.arange(0, pe_dim // 2).float().to(c.device)
+
+        self.encoding_x[:, :pe_dim // 2] = torch.sin(pos_x / (10000 ** (_2i / pe_dim)))
+        self.encoding_x[:, pe_dim // 2:] = torch.cos(pos_x / (10000 ** (_2i / pe_dim)))
+        self.encoding_y[:, :pe_dim // 2] = torch.sin(pos_y / (10000 ** (_2i / pe_dim)))
+        self.encoding_y[:, pe_dim // 2:] = torch.cos(pos_y / (10000 ** (_2i / pe_dim)))
+        
+        self.encoding = torch.zeros(x*y, pe_dim * 2).to(c.device)
+        self.encoding.requires_grad = False
+        for i in range(self.encoding.shape[0]):
+            idx = i % x
+            idy = i // x
+            self.encoding[i,:] = torch.cat((self.encoding_x[idx], self.encoding_y[idy]), dim=-1)
+
+    def forward(self, x):
+        batch_size, features, h, w = x.size()
+        patch_num = h * w
+        # (b, patch_num, patch_dim) -> (b, patch_num, pe_dim(=embed_dim))
+        return self.encoding[:patch_num, :]
+
+class MultiHead_Attention(nn.Module):
+    '''Multi-head Attention (cross attention)'''
+    def __init__(self, ma_dim=c.ma_dim, head_dim=c.head_dim, n_heads=c.n_heads, dropout=c.dropout, embed_dim=c.embed_dim):
+        super(MultiHead_Attention, self).__init__()
+        self.ma_dim = ma_dim
+        self.embed_dim = embed_dim
+        self.n_heads = n_heads
+        
+        self.to_q = nn.Linear(embed_dim, ma_dim)
+        self.to_k = nn.Linear(embed_dim, ma_dim)
+        self.to_v = nn.Linear(embed_dim, ma_dim)
+        
+        
+        self.softmax = nn.Softmax(dim=-1)
+        
+        self.to_out = nn.Sequential(
+            nn.Linear(ma_dim, embed_dim),
+            nn.Dropout(dropout)
+        )
+        
+        self.scale = 1 / np.sqrt(head_dim)
+        
+    def forward(self, raster, image):
+        # raster, image = x
+        q = self.to_q(raster)
+        k = self.to_k(image)
+        v = self.to_v(image)
+    
+        
+        q = rearrange(q, 'b n (h d) -> b h n d', h = self.n_heads)
+        k = rearrange(k, 'b n (h d) -> b h n d', h = self.n_heads)
+        v = rearrange(v, 'b n (h d) -> b h n d', h = self.n_heads)
+        
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        atten = self.softmax(dots)
+        
+        out1 = torch.matmul(atten, v)
+        out1 = rearrange(out1, 'b h n d -> b n (h d)')
+        
+        out = self.to_out(out1)
+        
+        return out
+    
+class ImageLinearAttention(nn.Module):
+    def __init__(self, chan, chan_out = None, kernel_size = 1, padding = 0, stride = 1, key_dim = 64, value_dim = 64, heads = 8, norm_queries = True):
+        super().__init__()
+        self.chan = chan
+        chan_out = chan if chan_out is None else chan_out
+
+        self.key_dim = key_dim
+        self.value_dim = value_dim
+        self.heads = heads
+
+        self.norm_queries = norm_queries
+
+        conv_kwargs = {'padding': padding, 'stride': stride}
+        self.to_q = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
+        self.to_k = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
+        self.to_v = nn.Conv2d(chan, value_dim * heads, kernel_size, **conv_kwargs)
+
+        out_conv_kwargs = {'padding': padding}
+        self.to_out = nn.Conv2d(value_dim * heads, chan_out, kernel_size, **out_conv_kwargs)
+
+    def forward(self, raster, image, context = None):
+        b, c, h, w, k_dim, heads = *raster.shape, self.key_dim, self.heads
+
+        q, k, v = (self.to_q(raster), self.to_k(image), self.to_v(image))
+        # (b, h, dim, h*w)
+        q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
+        # scale factor
+        q, k = map(lambda x: x * (self.key_dim ** -0.25), (q, k))
+
+        if context is not None:
+            context = context.reshape(b, c, 1, -1)
+            ck, cv = self.to_k(context), self.to_v(context)
+            ck, cv = map(lambda t: t.reshape(b, heads, k_dim, -1), (ck, cv))
+            k = torch.cat((k, ck), dim=3)
+            v = torch.cat((v, cv), dim=3)
+
+        k = k.softmax(dim=-1)
+
+        if self.norm_queries:
+            q = q.softmax(dim=-2)
+
+        context = torch.einsum('bhdn,bhen->bhde', k, v)
+        out = torch.einsum('bhdn,bhde->bhen', q, context)
+        out = out.reshape(b, -1, h, w)
+        out = self.to_out(out)
+        return out
+
+
+class FeedForward(nn.Module):
+    '''tow layers with acitivate function of GELU or RELU'''
+    def __init__(self, embed_dim=c.embed_dim, hidden_dim=c.hidden_dim, dropout=c.dropout):
+        super(FeedForward, self).__init__()
+    
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, embed_dim),
+            nn.Dropout(dropout)
+        ).to(c.device)
+        
+        for m in self.mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.normal_(m.weight, mean=1, std=0.02)
+                nn.init.zeros_(m.bias)
+                
+        
+    def forward(self, x):
+        return self.mlp(x)
+
+    
+class Add_Norm(nn.Module):
+    '''residual and layer norm'''
+    def __init__(self, embed_dim=32, dropout=0.1):
+        super(Add_Norm, self).__init__()
+        self.norm  = nn.LayerNorm(embed_dim).to(c.device)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, sub_layer, **kwargs):
+        sub_out = sub_layer(x, **kwargs)
+        x = self.dropout(x + sub_out)
+        return self.norm(x)
+
+    
+class TransfomerLayer(nn.Module):
+    '''repeated block of MHA & MLP & ADD_NORM stack together '''
+    def __init__(self, embed_dim, ma_dim, head_dim, n_heads, hidden_dim, dropout):
+        super(TransfomerLayer, self).__init__()
+
+        self.multi_atten = MultiHead_Attention(ma_dim, head_dim, n_heads, dropout, embed_dim).to(c.device)
+        self.feed_forward = FeedForward(embed_dim, hidden_dim, dropout).to(c.device)
+        self.add_norm = Add_Norm(embed_dim, dropout).to(c.device)
+        
+        for m in self.multi_atten.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.normal_(m.weight, mean=1, std=0.02)
+                nn.init.zeros_(m.bias)
+        
+    def forward(self, x):
+        raster, image = x
+        x = self.add_norm(raster, self.multi_atten, image=image)
+        x = self.add_norm(x, self.feed_forward)
+        # self-atten or cross atten?
+        return (x, image)
+    
+class Transformer(nn.Module):
+
+    def __init__(self, N, embed_dim=c.embed_dim, ma_dim=c.ma_dim, head_dim=c.head_dim, n_heads=c.n_heads, hidden_dim=c.hidden_dim, dropout=c.dropout):
+        super(Transformer, self).__init__()
+       
+        self.encoder = nn.Sequential(*[TransfomerLayer(embed_dim, ma_dim, head_dim, n_heads, hidden_dim, dropout) for _ in range(N)]).to(c.device)
+        
+    def forward(self, x):
+        output, _ = self.encoder(x)
+        return output
+    

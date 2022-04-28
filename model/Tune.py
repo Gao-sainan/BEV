@@ -149,7 +149,7 @@ def train_bev(config, checkpoint_dir=None, train_dir=None, test_dir=None):
     print("Finished Training")
         
 # 测试集精度
-def test_accuracy(net, device="cuda:0"):
+def test_accuracy(net, device="cuda:1"):
     trainset, testset = load_data()
  
     testloader = torch.utils.data.DataLoader(

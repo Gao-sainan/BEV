@@ -1,21 +1,23 @@
-from einops import rearrange
+import os
+
+import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter   
-from torch.utils.data import DataLoader
+import torchvision
 import torchvision.transforms as transforms
+from einops import rearrange
+from tabulate import tabulate
+from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
+from torchmetrics import (Accuracy, ConfusionMatrix, JaccardIndex, Precision,
+                          Recall)
+
+from bev import Bev
 from config import Config
 from data_function import ReplicaDataset
-from bev import Bev
-import torchvision
-import cv2 as cv
-import os
-from metrics import iou_pytorch
-from torch.utils.data import random_split
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
@@ -23,26 +25,28 @@ config = Config()
     
 transform = transforms.Compose([ 
                                 transforms.ToTensor(),
-                                transforms.Normalize(mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]),
+                                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
                                 ])
 
       
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 
 train = ReplicaDataset(config.train_dir, transform)
 test = ReplicaDataset(config.test_dir, transform)
 
-test_abs = int(len(train) * 0.8)
+
+val_abs = int(len(train) * 0.8)
     # 将训练数据划分为训练集（80%）和验证集（20%）
 train_subset, val_subset = random_split(
-    train, [test_abs, len(train) - test_abs])
+    train, [val_abs, len(train) - val_abs])
 
 train_loader = DataLoader(
     train_subset,
     batch_size=config.BATCH_SIZE,     
     shuffle=True,
     num_workers=8)
+
 valid_loader = DataLoader(
     val_subset,
     batch_size=config.BATCH_SIZE,
@@ -56,7 +60,6 @@ test_loader = DataLoader(
     num_workers=8)
 
 model = Bev(config.N)
-
 criterion = nn.BCEWithLogitsLoss()
 
 model.to(device)
@@ -65,6 +68,13 @@ criterion.to(device)
 optimizer = optim.Adam(model.parameters(), lr=config.LR)                       
 # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1) 
 
+Confmat = ConfusionMatrix(num_classes=2)
+Acc = Accuracy()
+IoU = JaccardIndex(num_classes=2)
+Pre = Precision(num_classes=2, mdmc_average='samplewise')
+Rec = Recall(num_classes=2, mdmc_average='samplewise')
+es = 0
+best_acc = 0.
 train_curve = list()
 valid_curve = list()
 
@@ -89,9 +99,6 @@ for epoch in range(config.MAX_EPOCH):
         # img: (b, 3, 480, 640)
         # label:(b, 2, 240, 320),two class 
         img1, img2, labels = data
-        # img1 = torch.autograd.Variable(img1)
-        # img2 = torch.autograd.Variable(img2)
-        # labels = torch.autograd.Variable(labels)
         
         img1 = img1.to(device)
         img2 = img2.to(device)
@@ -128,7 +135,7 @@ for epoch in range(config.MAX_EPOCH):
         _, label = torch.max(labels, 1)
         correct += (predicted.detach().cpu() == label.detach().cpu()).squeeze().sum().numpy()
         
-        iou = iou_pytorch(predicted, label)
+        iou = IoU(outputs.detach().cpu(), label.detach().cpu())
         
         train_curve.append(loss.item())
         loss_mean += loss.item()
@@ -175,7 +182,7 @@ for epoch in range(config.MAX_EPOCH):
                 total_val += (labels.size()[0] * labels.size()[2] * labels.size()[3])
                 _, label = torch.max(labels, 1)
                 correct_val += (predicted_val.detach().cpu() == label.detach().cpu()).squeeze().sum().numpy()
-                iou_val = iou_pytorch(predicted_val, label)
+                iou_val = IoU(outputs.detach().cpu(), label.detach().cpu())
                 
                 if not os.path.isdir(config.output_dir):
                     os.makedirs(config.output_dir)
@@ -188,26 +195,53 @@ for epoch in range(config.MAX_EPOCH):
             valid_curve.append(loss_val/valid_loader.__len__())
             print("Valid:\t Epoch[{:0>3}/{:0>3}] Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc:{:.2%} IOU:{:.2%}".format(
                 epoch, config.MAX_EPOCH, j+1, len(valid_loader), loss_val, correct_val / total_val, iou_val))
-
+            
             # 记录数据，保存于event file
             writer.add_scalars("Loss", {"Valid": np.mean(valid_curve)}, iter_count)
             writer.add_scalars("Accuracy", {"Valid": correct_val / total_val}, iter_count)
             writer.add_scalars("IoU", {"Valid": iou_val}, iter_count)
             
-                
-torch.save(model.state_dict(), config.cp_dir)
+            if iou_val > best_acc:
+                best_acc = iou_val
+                es = 0
+                torch.save(model.state_dict(), config.cp_dir)
+            else:
+                es += 1
+                print("Counter {} of 5".format(es))
+
+                if es > 4:
+                    print("Early stopping with best_iou: ", best_acc.item(), "and iou for this epoch: ", iou_val.item(), "...")
+                    break
+
+
+train_x = range(len(train_curve))
+train_y = train_curve
+
+train_iters = len(train_loader)
+valid_x = np.arange(1, len(valid_curve)+1) * train_iters*config.val_interval # 由于valid中记录的是epochloss，需要对记录点进行转换到iterations
+valid_y = valid_curve
+
+plt.plot(train_x, train_y, label='Train')
+plt.plot(valid_x, valid_y, label='Valid')
+
+plt.legend(loc='upper right')
+plt.ylabel('loss value')
+plt.xlabel('Iteration')
+plt.savefig('bev_curve.jpg')
+plt.show()
 
 print('----------------------------------Finish Training!----------------------------------')
 
 # test
 
-# Confmat = ConfusionMatrix(num_classes=2)
-# Acc = Accuracy()
-# IoU = JaccardIndex(num_classes=2)
-
 correct = 0.
 total = 0.
 loss = 0.
+
+mean_iou = 0.
+mean_precision = 0.
+mean_recall = 0.
+
 model.eval()
 for i, data in enumerate(test_loader):
 
@@ -219,43 +253,31 @@ for i, data in enumerate(test_loader):
     with torch.no_grad():
         outputs = model(img1, img2)
         loss_ = criterion(outputs, labels)
-        loss += loss_.item()
-    # cm = Confmat(outputs, labels)
-    # acc = Acc(outputs, labels)
-    # iou = IoU(outputs, labels)
+        # loss += loss_.item()
+
     
     _, predicted = torch.max(outputs.data, 1)
-    total += (labels.size()[0] * labels.size()[2] * labels.size()[3])
     _, label = torch.max(labels, 1)
-    correct += (predicted.detach().cpu() == label.detach().cpu()).squeeze().sum().numpy()
-    iou_test = iou_pytorch(predicted, label)
+    
+    cm = Confmat(outputs.detach().cpu(), label.detach().cpu())
+    acc = Acc(outputs.detach().cpu(), label.detach().cpu())
+    iou_test = IoU(outputs.detach().cpu(), label.detach().cpu())
+    precision = Pre(predicted.detach().cpu(), label.detach().cpu())
+    recall = Rec(predicted.detach().cpu(), label.detach().cpu())
+    mean_iou += iou.item()
+    mean_precision +=  precision.item()
+    mean_recall += recall.item()
         
-
     write_label = rearrange(label.cpu(), 'b h w -> h (b w)')
     write_predict = rearrange(predicted.cpu(), 'b h w -> h (b w)')
     write_image = torch.cat((write_label, write_predict), dim=0)
-    cv.imwrite(f'test_batch{i}_pred.png', write_image.numpy()*255)
-    # print("Test:\t Iteration[{:0>3}/{:0>3}] ConfuseMatirx:{}".format(i, len(test_loader)))
-    print("Test:\t Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc:{:.2%} IOU:{:.2%}".format(i, len(test_loader), loss, correct / total, iou_test))
-    # print("Test:\t Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc_api:{:.2%} IOU_api:{:.2%}".format(loss, acc, iou))
-    print("-----------next-----------------")
+    cv.imwrite(f'test_predict/test_batch{i}_pred.png', write_image.numpy()*255)
+    print("Test:\t Iteration[{:0>3}/{:0>3}] Loss: {:.4f} Acc:{:.2%} IOU:{:.2%} Precision:{:.2%} Recall:{:.2%}".format(i, len(test_loader), loss_, acc, iou_test, precision, recall))
+
+table = [['test', mean_iou / (i + 1), mean_precision / (i + 1), mean_precision / (i + 1)]]   
+print(tabulate(table, headers=[' ', 'IoU', 'Precison', 'Recall']))
+
 
     
             
-
-# train_x = range(len(train_curve))
-# train_y = train_curve
-
-# train_iters = len(train_loader)
-# valid_x = np.arange(1, len(valid_curve)+1) * train_iters*config.val_interval # 由于valid中记录的是epochloss，需要对记录点进行转换到iterations
-# valid_y = valid_curve
-
-# plt.plot(train_x, train_y, label='Train')
-# plt.plot(valid_x, valid_y, label='Valid')
-
-# plt.legend(loc='upper right')
-# plt.ylabel('loss value')
-# plt.xlabel('Iteration')
-# plt.savefig('bev_curve.jpg')
-# plt.show()
 

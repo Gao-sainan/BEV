@@ -1,10 +1,8 @@
+
 from PIL import Image
-import cv2 as cv
-from cv2 import transform
 from torch.utils.data import Dataset
 import os
 import torch
-import matplotlib.pyplot as plt
 import torchvision.transforms as transforms
 
 
@@ -26,12 +24,11 @@ class ReplicaDataset(Dataset):
         
         label = transforms.functional.to_tensor(label)
         label = self.label_one_hot(label)
-        raster = torch.zeros(size=(1, 60, 80))
         
         if self.transform:
             image1 = self.transform(image1)
             image2 = self.transform(image2)
-
+        
 
         return image1, image2, label
     
@@ -46,28 +43,36 @@ class ReplicaDataset(Dataset):
          
     @staticmethod
     def get_data_info(root):
-        image_path = os.path.join(root, 'images/')
-        label_path = os.path.join(root, 'label/')
-        image_names = os.listdir(image_path)
-        label_names = os.listdir(label_path)
-        image_names = list(filter(lambda x: x.endswith('.jpg'), image_names))
-        label_names = list(filter(lambda x: x.endswith('.png'), label_names))
-        image_names.sort()
-        label_names.sort()
+        listdir = os.listdir(root)
+        image_path_list = list(filter(lambda x: x.startswith('images'), listdir))
+        image_path_list.sort()
+        label_path_list = list(filter(lambda x: x.startswith('label'), listdir))
+        label_path_list.sort()
+        full_data = []
+        for p in range(len(image_path_list)):
+            image_path = image_path_list[p]
+            label_path = label_path_list[p]
+            image_names = os.listdir(os.path.join(root, image_path))
+            label_names = os.listdir(os.path.join(root, label_path))
+            image_names = list(filter(lambda x: x.endswith('.jpg'), image_names))
+            label_names = list(filter(lambda x: x.endswith('.png'), label_names))
+            image_names.sort()
+            label_names.sort()
         
-        data_info = []
-        for i in range(0, len(image_names), 2):
-            image1 = image_names[i]
-            image2 = image_names[i+1]
-            label = label_names[i//2]
+            data_info = []
+            for i in range(0, len(image_names), 2):
+                image1 = image_names[i]
+                image2 = image_names[i+1]
+                label = label_names[i//2]
 
-            path_image1 = os.path.join(root, 'images/', image1)
-            path_image2 = os.path.join(root, 'images/', image2)
-            path_label = os.path.join(root, 'label/', label)
+                path_image1 = os.path.join(root, image_path, image1)
+                path_image2 = os.path.join(root, image_path, image2)
+                path_label = os.path.join(root, label_path, label)
 
-            data_info.append((path_image1, path_image2, path_label))
-        return data_info
-   
+                data_info.append((path_image1, path_image2, path_label))
+            full_data.extend(data_info)
+        return full_data
+
 
 
 

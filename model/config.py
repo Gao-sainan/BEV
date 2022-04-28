@@ -3,7 +3,7 @@ import torch
 class Config:
     '''将所有参数封装一个类，方便调用'''
     def __init__(self):
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
         
         # two class
         self.cls = 2
@@ -39,7 +39,7 @@ class Config:
         # embedding长度--自己设计
         self.embed_dim = 64
         # 注意头数量,以及每个头内的编码长度
-        self.n_heads = 4 
+        self.n_heads = 4
         self.head_dim = 128
         # k、v多头注意总长度
         self.ma_dim = self.head_dim * self.n_heads
@@ -52,16 +52,17 @@ class Config:
         self.dropout = 0.1
         
         self.MAX_EPOCH = 100
-        self.BATCH_SIZE = 4
-        self.LR = 0.01
+        self.BATCH_SIZE = 8
+        self.LR = 0.0001
         self.log_interval = 5
         self.val_interval = 1
         
-        self.log_dir = 'model_log2/'
-        self.cp_dir = 'model_cp/bev.pt'
-        self.train_dir = 'data/apartment_0/train/' 
-        self.test_dir = 'data/apartment_0/test/'
+        self.log_dir = 'model_log_es/'
+        self.cp_dir = 'model_cp/bev_es.pt'
+        self.train_dir = 'data/apartment_0_train/' 
+        self.test_dir = 'data/apartment_0_test/'
+        # self.new_test_dir = 'data/apartment_0/test/'
         
         
-        self.output_dir = 'output_n3/'
+        self.output_dir = 'output_es/'
         

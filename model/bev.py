@@ -92,8 +92,8 @@ class Bev(nn.Module):
 
 
         # input(b, 88, 15, 20) -> (b, 15*20, 88) -> (b, 300, 96)
-        self.patch_embed = PatchEmbedding(96)
-        self.cam_pos_encode = nn.Parameter(torch.randn(2, 32))
+        self.patch_embed = PatchEmbedding(64)
+        self.cam_pos_encode = nn.Parameter(torch.randn(2, 64))
         self.cam_pos_encode.requires_grad = True
         self.input_pos_encode = PostionalEncoding(32, 15, 20)
         
@@ -118,7 +118,7 @@ class Bev(nn.Module):
 
         
     def forward(self, input1, input2):
-        # input1, input2, output_raster = x
+        # input1, input2 = x
 
         f1_p2, f1_p3, f1_p4, f1_p5 = self.multiscalefeature1(input1)
         f2_p2, f2_p3, f2_p4, f2_p5 = self.multiscalefeature2(input2)
@@ -151,11 +151,14 @@ class Bev(nn.Module):
         cam_pos = self.cam_pos_encode
 
         # (b, patch_num(300), 64)
-        cam0 = repeat(cam_pos[0], 'd -> (repeat r) d', r =1, repeat=300)
-        cam1 = repeat(cam_pos[1], 'd -> (repeat r) d', r =1, repeat=300)
+        cam0 = repeat(cam_pos[1], 'd -> (repeat r) d', r =1, repeat=300)
+        cam1 = repeat(cam_pos[0], 'd -> (repeat r) d', r =1, repeat=300)
 
-        embed1 = multi_features1_embed + torch.cat((pos_encode1, cam0), dim=-1)
-        embed2 = multi_features2_embed + torch.cat((pos_encode2, cam1), dim=-1)
+        # embed1 = multi_features1_embed + torch.cat((pos_encode1, cam0), dim=-1)
+        # embed2 = multi_features2_embed + torch.cat((pos_encode2, cam1), dim=-1)
+        
+        embed1 = multi_features1_embed + pos_encode1 + cam0
+        embed2 = multi_features2_embed + pos_encode2 + cam1
 
         # raster(b, 1, 60, 80) -> (b, 60*80, 1) -> (b, 4800, 32)
         raster_embed = self.raster_patch_embed(context_summary)
@@ -166,7 +169,7 @@ class Bev(nn.Module):
         # transformer_input = (embed_.to(torch.float32), fusion_features.to(torch.float32))
         # out= self.T(transformer_input)
         
-        predict = self.seg(self.T((embed_, embed1, embed2)))
+        predict = self.seg(self.T((embed_, torch.cat((embed1, embed2), dim=1))))
         return predict
     
 

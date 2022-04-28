@@ -60,9 +60,6 @@ class PostionalEncoding(nn.Module):
         # (b, patch_num, patch_dim) -> (b, patch_num, pe_dim(=embed_dim))
         return self.encoding[:patch_num, :]
 
-    
-
-
 class MultiHead_Attention(nn.Module):
     '''Multi-head Attention (cross attention)'''
     def __init__(self, ma_dim=c.ma_dim, head_dim=c.head_dim, n_heads=c.n_heads, dropout=c.dropout, embed_dim=c.embed_dim):
@@ -72,8 +69,8 @@ class MultiHead_Attention(nn.Module):
         self.n_heads = n_heads
         
         self.to_q = nn.Linear(embed_dim, ma_dim)
-        self.to_k = nn.Linear(96, ma_dim)
-        self.to_v = nn.Linear(96, ma_dim)
+        self.to_k = nn.Linear(embed_dim, ma_dim)
+        self.to_v = nn.Linear(embed_dim, ma_dim)
         
         
         self.softmax = nn.Softmax(dim=-1)
@@ -88,20 +85,19 @@ class MultiHead_Attention(nn.Module):
     def forward(self, raster, image):
         # raster, image = x
         q = self.to_q(raster)
-        k1 = self.to_k(image)
-        v1 = self.to_v(image)
+        k = self.to_k(image)
+        v = self.to_v(image)
     
         
         q = rearrange(q, 'b n (h d) -> b h n d', h = self.n_heads)
-        k1 = rearrange(k1, 'b n (h d) -> b h n d', h = self.n_heads)
-        v1 = rearrange(v1, 'b n (h d) -> b h n d', h = self.n_heads)
+        k = rearrange(k, 'b n (h d) -> b h n d', h = self.n_heads)
+        v = rearrange(v, 'b n (h d) -> b h n d', h = self.n_heads)
         
-        dots1 = torch.matmul(q, k1.transpose(-1, -2)) * self.scale
-        atten1 = self.softmax(dots1)
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        atten = self.softmax(dots)
         
-        out1 = torch.matmul(atten1, v1)
+        out1 = torch.matmul(atten, v)
         out1 = rearrange(out1, 'b h n d -> b n (h d)')
-        
         
         out = self.to_out(out1)
         
@@ -164,11 +160,11 @@ class TransfomerLayer(nn.Module):
                 nn.init.zeros_(m.bias)
         
     def forward(self, x):
-        raster, image1, image2 = x
-        x1 = self.add_norm(raster, self.multi_atten, image=image1)
-        x2 = self.add_norm(raster, self.multi_atten, image=image2)
-        x = self.add_norm(x1+x2, self.feed_forward)
-        return (x, image1, image2)
+        raster, image = x
+        x = self.add_norm(raster, self.multi_atten, image=image)
+        x = self.add_norm(x, self.feed_forward)
+        # self-atten or cross atten?
+        return (x, image)
     
 class Transformer(nn.Module):
 
@@ -178,6 +174,6 @@ class Transformer(nn.Module):
         self.encoder = nn.Sequential(*[TransfomerLayer(embed_dim, ma_dim, head_dim, n_heads, hidden_dim, dropout) for _ in range(N)]).to(c.device)
         
     def forward(self, x):
-        output, _ , _= self.encoder(x)
+        output, _ = self.encoder(x)
         return output
     

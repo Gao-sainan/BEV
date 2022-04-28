@@ -7,6 +7,39 @@ from torchvision import models
 from config import Config
 c = Config()
 
+class BasicBlock(nn.Module):
+    expansion = 1
+ 
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1,
+                     padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+ 
+    def forward(self, x):
+        residual = x
+ 
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+ 
+        out = self.conv2(out)
+        out = self.bn2(out)
+ 
+        if self.downsample is not None:
+            residual = self.downsample(x)
+ 
+        out += residual
+        out = self.relu(out)
+ 
+        return out
+
 class BottleNeck(nn.Module):
     expansion = 4
 
@@ -216,16 +249,16 @@ class MultiScaleFeature(nn.Module):
     def __init__(self) -> None:
         super(MultiScaleFeature, self).__init__()
 
-        self.resnet = ResNet(BottleNeck, [3, 4, 6, 3]).to(c.device)
+        self.resnet = ResNet(BasicBlock, [3, 4, 6, 3]).to(c.device)
         # initialize resnet with ImageNet Pretrained weight
-        resnet50 = models.resnet50(pretrained=True)
+        resnet34 = models.resnet34(pretrained=True)
         model_dict = self.resnet.state_dict()
-        pretrained_dict = resnet50.state_dict()
+        pretrained_dict = resnet34.state_dict()
         pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
         model_dict.update(pretrained_dict)
         self.resnet.load_state_dict(model_dict)
         
-        self.bifpn = BiFPN([256, 512, 1024, 2048]).to(c.device)
+        self.bifpn = BiFPN([64, 128, 256, 512]).to(c.device)
 
     def forward(self, x):
         x = self.resnet(x)
