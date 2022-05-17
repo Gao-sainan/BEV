@@ -4,6 +4,7 @@ import torch.nn as nn
 from einops import rearrange
 from config import Config
 from einops.layers.torch import Rearrange
+import math
 
 c = Config()
 
@@ -18,11 +19,6 @@ class PatchEmbedding(nn.Module):
             # (b, c, patch_num, patch_dim) -> (b, c, patch_num, embed_dim)
             nn.Linear(patch_dim, embed_dim)
             )
-        
-        for m in self.to_patch_embedding.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
 
         
     def forward(self, x):
@@ -59,96 +55,77 @@ class PostionalEncoding(nn.Module):
         patch_num = h * w
         # (b, patch_num, patch_dim) -> (b, patch_num, pe_dim(=embed_dim))
         return self.encoding[:patch_num, :]
-
-class MultiHead_Attention(nn.Module):
-    '''Multi-head Attention (cross attention)'''
-    def __init__(self, ma_dim=c.ma_dim, head_dim=c.head_dim, n_heads=c.n_heads, dropout=c.dropout, embed_dim=c.embed_dim):
-        super(MultiHead_Attention, self).__init__()
-        self.ma_dim = ma_dim
-        self.embed_dim = embed_dim
-        self.n_heads = n_heads
-        
-        self.to_q = nn.Linear(embed_dim, ma_dim)
-        self.to_k = nn.Linear(embed_dim, ma_dim)
-        self.to_v = nn.Linear(embed_dim, ma_dim)
-        
-        
-        self.softmax = nn.Softmax(dim=-1)
-        
-        self.to_out = nn.Sequential(
-            nn.Linear(ma_dim, embed_dim),
-            nn.Dropout(dropout)
-        )
-        
-        self.scale = 1 / np.sqrt(head_dim)
-        
-    def forward(self, raster, image):
-        # raster, image = x
-        q = self.to_q(raster)
-        k = self.to_k(image)
-        v = self.to_v(image)
     
-        
-        q = rearrange(q, 'b n (h d) -> b h n d', h = self.n_heads)
-        k = rearrange(k, 'b n (h d) -> b h n d', h = self.n_heads)
-        v = rearrange(v, 'b n (h d) -> b h n d', h = self.n_heads)
-        
-        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-        atten = self.softmax(dots)
-        
-        out1 = torch.matmul(atten, v)
-        out1 = rearrange(out1, 'b h n d -> b n (h d)')
-        
-        out = self.to_out(out1)
-        
-        return out
-    
-class ImageLinearAttention(nn.Module):
-    def __init__(self, chan, chan_out = None, kernel_size = 1, padding = 0, stride = 1, key_dim = 64, value_dim = 64, heads = 8, norm_queries = True):
-        super().__init__()
-        self.chan = chan
-        chan_out = chan if chan_out is None else chan_out
+def init_(tensor):
+    dim = tensor.shape[-1]
+    std = 1 / math.sqrt(dim)
+    tensor.uniform_(-std, std)
+    return tensor
 
-        self.key_dim = key_dim
-        self.value_dim = value_dim
+class LinformerSelfAttention(nn.Module):
+    def __init__(self, seq_len=600, dim=c.embed_dim, k=32, heads=c.n_heads, dim_head=c.head_dim, one_kv_head = False, share_kv = False, dropout = 0.1):
+        super(LinformerSelfAttention, self).__init__()
+        assert (dim % heads) == 0, 'dimension must be divisible by the number of heads'
+
+        self.seq_len = seq_len
+        self.k = k
+
         self.heads = heads
 
-        self.norm_queries = norm_queries
+        self.dim_head = dim_head
 
-        conv_kwargs = {'padding': padding, 'stride': stride}
-        self.to_q = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
-        self.to_k = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
-        self.to_v = nn.Conv2d(chan, value_dim * heads, kernel_size, **conv_kwargs)
+        self.to_q = nn.Linear(dim, dim_head * heads, bias = False)
 
-        out_conv_kwargs = {'padding': padding}
-        self.to_out = nn.Conv2d(value_dim * heads, chan_out, kernel_size, **out_conv_kwargs)
+        kv_dim = dim_head if one_kv_head else (dim_head * heads)
+        self.to_k = nn.Linear(dim, kv_dim, bias = False)
+        self.proj_k = nn.Parameter(init_(torch.zeros(seq_len, k)))
 
-    def forward(self, raster, image, context = None):
-        b, c, h, w, k_dim, heads = *raster.shape, self.key_dim, self.heads
+        self.share_kv = share_kv
+        if not share_kv:
+            self.to_v = nn.Linear(dim, kv_dim, bias = False)
+            self.proj_v = nn.Parameter(init_(torch.zeros(seq_len, k)))
 
-        q, k, v = (self.to_q(raster), self.to_k(image), self.to_v(image))
-        # (b, h, dim, h*w)
-        q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
-        # scale factor
-        q, k = map(lambda x: x * (self.key_dim ** -0.25), (q, k))
+        self.dropout = nn.Dropout(dropout)
+        self.to_out = nn.Linear(dim_head * heads, dim)
 
-        if context is not None:
-            context = context.reshape(b, c, 1, -1)
-            ck, cv = self.to_k(context), self.to_v(context)
-            ck, cv = map(lambda t: t.reshape(b, heads, k_dim, -1), (ck, cv))
-            k = torch.cat((k, ck), dim=3)
-            v = torch.cat((v, cv), dim=3)
+    def forward(self, x, context, **kwargs):
+        b, n, d, d_h, h, k = *x.shape, self.dim_head, self.heads, self.k
 
-        k = k.softmax(dim=-1)
+        kv_len = n if context is None else context.shape[1]
+        assert kv_len == self.seq_len, f'the sequence length of the key / values must be {self.seq_len} - {kv_len} given'
 
-        if self.norm_queries:
-            q = q.softmax(dim=-2)
+        queries = self.to_q(x)
 
-        context = torch.einsum('bhdn,bhen->bhde', k, v)
-        out = torch.einsum('bhdn,bhde->bhen', q, context)
-        out = out.reshape(b, -1, h, w)
-        out = self.to_out(out)
-        return out
+        proj_seq_len = lambda args: torch.einsum('bnd,nk->bkd', *args)
+
+        kv_input = x if context is None else context
+
+        keys = self.to_k(kv_input)
+        values = self.to_v(kv_input) if not self.share_kv else keys
+
+        kv_projs = (self.proj_k, self.proj_v if not self.share_kv else self.proj_k)
+
+        # project keys and values along the sequence length dimension to k
+
+        keys, values = map(proj_seq_len, zip((keys, values), kv_projs))
+
+        # merge head into batch for queries and key / values
+
+        queries = queries.reshape(b, n, h, -1).transpose(1, 2)
+
+        merge_key_values = lambda t: t.reshape(b, k, -1, d_h).transpose(1, 2).expand(-1, h, -1, -1)
+        keys, values = map(merge_key_values, (keys, values))
+
+        # attention
+
+        dots = torch.einsum('bhnd,bhkd->bhnk', queries, keys) * (d_h ** -0.5)
+        attn = dots.softmax(dim=-1)
+        attn = self.dropout(attn)
+        out = torch.einsum('bhnk,bhkd->bhnd', attn, values)
+
+        # split heads
+        out = out.transpose(1, 2).reshape(b, n, -1)
+        return self.to_out(out)
 
 
 class FeedForward(nn.Module):
@@ -163,14 +140,6 @@ class FeedForward(nn.Module):
             nn.Linear(hidden_dim, embed_dim),
             nn.Dropout(dropout)
         ).to(c.device)
-        
-        for m in self.mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight, mean=1, std=0.02)
-                nn.init.zeros_(m.bias)
                 
         
     def forward(self, x):
@@ -195,21 +164,13 @@ class TransfomerLayer(nn.Module):
     def __init__(self, embed_dim, ma_dim, head_dim, n_heads, hidden_dim, dropout):
         super(TransfomerLayer, self).__init__()
 
-        self.multi_atten = MultiHead_Attention(ma_dim, head_dim, n_heads, dropout, embed_dim).to(c.device)
+        self.lin_atten = LinformerSelfAttention().to(c.device)
         self.feed_forward = FeedForward(embed_dim, hidden_dim, dropout).to(c.device)
         self.add_norm = Add_Norm(embed_dim, dropout).to(c.device)
         
-        for m in self.multi_atten.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight, mean=1, std=0.02)
-                nn.init.zeros_(m.bias)
-        
     def forward(self, x):
         raster, image = x
-        x = self.add_norm(raster, self.multi_atten, image=image)
+        x = self.add_norm(raster, self.lin_atten, context=image)
         x = self.add_norm(x, self.feed_forward)
         # self-atten or cross atten?
         return (x, image)

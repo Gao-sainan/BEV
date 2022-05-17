@@ -3,7 +3,7 @@ import torch
 class Config:
     '''将所有参数封装一个类，方便调用'''
     def __init__(self):
-        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
         # two class
         self.cls = 2
@@ -46,7 +46,7 @@ class Config:
         # mlp 隐藏层长度
         self.hidden_dim = 1024
         
-        # encoder-decoder 数量
+        # transfomer 数量
         self.N = 3
         
         self.dropout = 0.1
@@ -54,15 +54,15 @@ class Config:
         self.MAX_EPOCH = 100
         self.BATCH_SIZE = 8
         self.LR = 0.0001
-        self.log_interval = 5
+        self.log_interval = 20
         self.val_interval = 1
         
-        self.log_dir = 'model_log_es/'
-        self.cp_dir = 'model_cp/bev_es.pt'
+        self.log_dir = 'model_log_0517/'
+        self.cp_dir = 'model_cp/bev_0517.pt'
         self.train_dir = 'data/apartment_0_train/' 
         self.test_dir = 'data/apartment_0_test/'
         # self.new_test_dir = 'data/apartment_0/test/'
         
         
-        self.output_dir = 'output_es/'
+        self.output_dir = 'output_0517/'
         

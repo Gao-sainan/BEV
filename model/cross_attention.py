@@ -18,11 +18,6 @@ class PatchEmbedding(nn.Module):
             # (b, c, patch_num, patch_dim) -> (b, c, patch_num, embed_dim)
             nn.Linear(patch_dim, embed_dim)
             )
-        
-        for m in self.to_patch_embedding.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
 
         
     def forward(self, x):
@@ -115,14 +110,6 @@ class FeedForward(nn.Module):
             nn.Linear(hidden_dim, embed_dim),
             nn.Dropout(dropout)
         ).to(c.device)
-        
-        for m in self.mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight, mean=1, std=0.02)
-                nn.init.zeros_(m.bias)
                 
         
     def forward(self, x):
@@ -150,14 +137,6 @@ class TransfomerLayer(nn.Module):
         self.multi_atten = MultiHead_Attention(ma_dim, head_dim, n_heads, dropout, embed_dim).to(c.device)
         self.feed_forward = FeedForward(embed_dim, hidden_dim, dropout).to(c.device)
         self.add_norm = Add_Norm(embed_dim, dropout).to(c.device)
-        
-        for m in self.multi_atten.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight, mean=1, std=0.02)
-                nn.init.zeros_(m.bias)
         
     def forward(self, x):
         raster, image = x

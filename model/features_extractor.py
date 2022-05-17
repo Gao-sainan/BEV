@@ -100,13 +100,13 @@ class ResNet(nn.Module):
         # self.avgpool = nn.AvgPool2d(7, stride=1)
         # self.fc = nn.Linear(512 * block.expansion, 1000)
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+        #         m.weight.data.normal_(0, math.sqrt(2. / n))
+        #     elif isinstance(m, nn.BatchNorm2d):
+        #         m.weight.data.fill_(1)
+        #         m.bias.data.zero_()
 
         
     def _make_layer(self, block, planes, blocks, stride=1):
@@ -157,12 +157,12 @@ class DepthwiseConvBlock(nn.Module):
                                    padding, dilation, groups=in_channels, bias=False)
         self.ponitwise = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
                                    padding, dilation, groups=1, bias=False)
-        nn.init.kaiming_uniform_(self.depthwise.weight)
-        nn.init.kaiming_uniform_(self.ponitwise.weight)
+        # nn.init.kaiming_uniform_(self.depthwise.weight)
+        # nn.init.kaiming_uniform_(self.ponitwise.weight)
         
         self.bn = nn.BatchNorm2d(out_channels)
-        nn.init.zeros_(self.bn.bias)
-        nn.init.uniform_(self.bn.weight)
+        # nn.init.zeros_(self.bn.bias)
+        # nn.init.uniform_(self.bn.weight)
         self.relu = nn.ReLU(inplace=True)
         
     def forward(self, x):
@@ -224,10 +224,10 @@ class BiFPN(nn.Module):
         self.p3 = nn.Conv2d(size[1], feature_size, kernel_size=1, stride=1, padding=0)
         self.p4 = nn.Conv2d(size[2], feature_size, kernel_size=1, stride=1, padding=0)
         self.p5 = nn.Conv2d(size[3], feature_size, kernel_size=1, stride=1, padding=0)
-        nn.init.xavier_normal_(self.p2.weight)
-        nn.init.xavier_normal_(self.p3.weight)
-        nn.init.xavier_normal_(self.p4.weight)
-        nn.init.xavier_normal_(self.p5.weight)
+        # nn.init.xavier_normal_(self.p2.weight)
+        # nn.init.xavier_normal_(self.p3.weight)
+        # nn.init.xavier_normal_(self.p4.weight)
+        # nn.init.xavier_normal_(self.p5.weight)
         
         
         bifpn = []

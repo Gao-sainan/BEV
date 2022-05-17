@@ -25,14 +25,6 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        
-        for m in self.double_conv.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_uniform_(m.weight)
-                
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight, mean=1, std=0.02)
-                nn.init.zeros_(m.bias)
                 
 
     def forward(self, x):
@@ -69,8 +61,6 @@ class SegHead(nn.Module):
         
         self.out = nn.Conv2d(in_channels // 4, out_channels, kernel_size=1)
 
-        nn.init.kaiming_uniform_(self.out.weight)
-        nn.init.constant_(self.out.bias, 0.)
         
     def forward(self, x):
         
